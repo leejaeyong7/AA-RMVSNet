@@ -57,11 +57,12 @@ class FeatNet(nn.Module):
         return self.intraAA(x0,x1,x2)
 
 class UNetConvLSTM(nn.Module):
-    def __init__(self, input_size, input_dim, hidden_dim, kernel_size, num_layers,
+    def __init__(self, input_dim, hidden_dim, kernel_size, num_layers, image_scale,
                  bias=True):
         super(UNetConvLSTM, self).__init__()
 
         self._check_kernel_size_consistency(kernel_size)
+        self.image_scale = image_scale
 
         # Make sure that both `kernel_size` and `hidden_dim` are lists having len == num_layers
         kernel_size = self._extend_for_multilayer(kernel_size, num_layers)
@@ -69,8 +70,6 @@ class UNetConvLSTM(nn.Module):
         if not len(kernel_size) == len(hidden_dim) == num_layers:
             raise ValueError('Inconsistent list length.')
 
-        self.height, self.width = input_size #feature: height, width)
-        print('Training Phase in UNetConvLSTM: {}, {}'.format(self.height, self.width))
         self.input_dim  = input_dim # input channel
         self.hidden_dim = hidden_dim # output channel [16, 16, 16, 16, 16, 8]
         self.kernel_size = kernel_size # kernel size  [[3, 3]*5]
@@ -82,8 +81,7 @@ class UNetConvLSTM(nn.Module):
         
         for i in range(0, self.num_layers):
             scale = 2**i if i < self.down_num else 2**(self.num_layers-i-1)
-            cell_list.append(ConvLSTMCell(input_size=(int(self.height/scale), int(self.width/scale)),
-                                        input_dim=self.input_dim[i],
+            cell_list.append(ConvLSTMCell(input_dim=self.input_dim[i],
                                         hidden_dim=self.hidden_dim[i],
                                         kernel_size=self.kernel_size[i],
                                         bias=self.bias))
@@ -124,7 +122,10 @@ class UNetConvLSTM(nn.Module):
         last_state_list, layer_output
         """
         if idx ==0 : # input the first layer of input image
-           hidden_state = self._init_hidden(batch_size=input_tensor.size(0))
+           B, C, H, W = input_tensor.shape
+           rH = int(H * self.image_scale)
+           rW = int(W * self.image_scale)
+           hidden_state = self._init_hidden(batch_size=B, width=W, height=H)
 
         layer_output_list = []
         last_state_list   = []
@@ -192,10 +193,11 @@ class UNetConvLSTM(nn.Module):
 
             return prob_volume
 
-    def _init_hidden(self, batch_size):
+    def _init_hidden(self, batch_size, height, width):
         init_states = []
         for i in range(self.num_layers):
-            init_states.append(self.cell_list[i].init_hidden(batch_size))
+            scale = 2**i if i < self.down_num else 2**(self.num_layers-i-1)
+            init_states.append(self.cell_list[i].init_hidden(batch_size, int(height / scale), int(width / scale)))
         return init_states
 
     @staticmethod
@@ -211,24 +213,40 @@ class UNetConvLSTM(nn.Module):
         return param
 
 class AARMVSNet(nn.Module):
-    def __init__(self, image_scale=0.25, max_h=960, max_w=480, return_depth=False):
+    def __init__(self, image_scale=0.25, return_depth=False):
 
         super(AARMVSNet,self).__init__()
         self.feature = FeatNet()
-        input_size = (int(max_h * image_scale), int(max_w * image_scale))  # height, width
-
+        self.image_scale = image_scale
         input_dim = [32, 16, 16, 32, 32]
         hidden_dim = [16, 16, 16, 16, 8]
         num_layers = 5
         kernel_size = [(3, 3) for _ in range(num_layers)]
 
-        self.cost_regularization = UNetConvLSTM(input_size, input_dim, hidden_dim, kernel_size, num_layers,
-                                                bias=True)
+        self.cost_regularization = UNetConvLSTM(input_dim, hidden_dim, kernel_size, num_layers, image_scale, bias=True)
         self.omega = InterViewAAModule(32)
 
         self.return_depth = return_depth
 
-    def forward(self, imgs, proj_matrices, depth_values):
+    # def forward(self, imgs, proj_matrices, depth_values):
+    def forward(self, imgs, K, E, min_d, max_d, num_d=128):
+        '''
+        imgs: NxCxHxW
+        K: Nx3x3
+        E: Nx4x4
+        '''
+        imgs_mean = imgs.view(1, 3, -1).mean(-1).view(1, 3, 1, 1)
+        imgs_std = imgs.view(1, 3, -1).std(-1).view(1, 3, 1, 1)
+        imgs = (imgs - imgs_mean) / (imgs_std + 1e-8)
+        imgs = imgs.unsqueeze(0)
+        proj_matrices = torch.zeros_like(E)
+        proj_matrices[:, 3, 3] = 1
+        proj_matrices[:, :3] = K @ E[:, :3]
+        proj_matrices = proj_matrices.unsqueeze(0)
+        dev = imgs.device
+        depth_values = 1.0 / torch.linspace(1.0 / min_d, 1.0 / max_d, num_d, device=dev).view(1, -1)
+
+
         imgs = torch.unbind(imgs, 1)
         proj_matrices = torch.unbind(proj_matrices, 1)
         assert len(imgs) == len(proj_matrices), "Different number of images and projection matrices"

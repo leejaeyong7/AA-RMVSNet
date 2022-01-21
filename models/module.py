@@ -39,14 +39,12 @@ def homo_warping_depthwise(src_fea, src_proj, ref_proj, depth_value):
 
 class ConvLSTMCell(nn.Module):
 
-    def __init__(self, input_size, input_dim, hidden_dim, kernel_size, bias=True):
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
         """
         Initialize ConvLSTM cell.
         
         Parameters
         ----------
-        input_size: (int, int)
-            Height and width of input tensor as (height, width).
         input_dim: int
             Number of channels of input tensor.
         hidden_dim: int
@@ -59,7 +57,6 @@ class ConvLSTMCell(nn.Module):
 
         super(ConvLSTMCell, self).__init__()
 
-        self.height, self.width = input_size
         self.input_dim  = input_dim
         self.hidden_dim = hidden_dim
 
@@ -91,9 +88,9 @@ class ConvLSTMCell(nn.Module):
         
         return h_next, c_next
 
-    def init_hidden(self, batch_size):
-        return (Variable(torch.zeros(batch_size, self.hidden_dim, self.height, self.width)).cuda(),
-                Variable(torch.zeros(batch_size, self.hidden_dim, self.height, self.width)).cuda())
+    def init_hidden(self, batch_size, height, width):
+        return (Variable(torch.zeros(batch_size, self.hidden_dim, height, width)).cuda(),
+                Variable(torch.zeros(batch_size, self.hidden_dim, height, width)).cuda())
 
 def convgnrelu(in_channels, out_channels, kernel_size=3, stride=1,dilation=1, bias=True, group_channel=8):
     return nn.Sequential(
